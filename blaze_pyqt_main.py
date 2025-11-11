@@ -600,6 +600,7 @@ class BlazeMainWindow(QMainWindow):
             
             # --- SYSTEM COMMANDS ---
             if "shutdown" in command:
+                io.speak("Are you sure you want to shut down?")
                 self.add_log("Shutting down...")
                 io.speak("Shutting down. Goodbye.")
                 QTimer.singleShot(2000, lambda: automation.shutdown_system())
