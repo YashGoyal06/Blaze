@@ -591,6 +591,8 @@ class BlazeMainWindow(QMainWindow):
         self.voice_thread.start()
     
     def process_command(self, command):
+        if not command or command == 'none':
+            return
         self.add_log(f"Processing: {command}")
         
         if "blaze" in command:
