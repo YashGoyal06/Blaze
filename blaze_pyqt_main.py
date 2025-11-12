@@ -417,6 +417,7 @@ class FaceVerificationWidget(QWidget):
 
 class BlazeMainWindow(QMainWindow):
     def __init__(self):
+        self._last_command = None
         super().__init__()
         self.setWindowTitle("Blaze Voice Assistant")
         self.setFixedSize(1000, 700)
