@@ -576,6 +576,7 @@ class BlazeMainWindow(QMainWindow):
         if hasattr(self, 'progress_label'): self.progress_label.setText(text)
     
     def add_log(self, text):
+        text = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {text}"
         """Adds text to the command log with fading history effect"""
         current_text = self.command_log.text()
         # Keep last 3 lines essentially
