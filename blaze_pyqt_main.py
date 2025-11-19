@@ -656,6 +656,7 @@ class BlazeMainWindow(QMainWindow):
                     words = command.split()
                     for word in words:
                         if word.isdigit():
+                            vol = max(0, min(100, int(word)))
                             vol = int(word)
                             os.system(f"osascript -e 'set volume output volume {vol}'")
                             self.add_log(f"Volume set to {vol}%")
