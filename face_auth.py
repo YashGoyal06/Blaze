@@ -3,126 +3,115 @@ import os
 import numpy as np
 import time
 
-# Create storage directory if not exists
-if not os.path.exists('user_data'):
-    os.makedirs('user_data')
+# File paths
+trainer_file = "user_data/trainer.yml"
+dataset_path = "user_data"
 
-FACE_FILE = "user_data/trainer.yml"
-
-def get_face_detector():
-    return cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Initialize Face Detector
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
 def is_user_registered():
-    return os.path.exists(FACE_FILE)
+    return os.path.exists(trainer_file)
 
-def capture_and_train_qt(window):
+def capture_and_train_qt(signals):
     """
-    Captures user faces and trains the LBPH Recognizer for PyQt6.
+    Captures user face using OpenCV and trains the LBPH model.
     """
-    detector = get_face_detector()
-    video = cv2.VideoCapture(0)
-    
-    count = 0
-    samples = []
+    if not os.path.exists(dataset_path):
+        os.makedirs(dataset_path)
+
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    faces_data = []
     ids = []
-    
-    time.sleep(1)
+    count = 0
+    required_samples = 50 
 
+    signals.update_status("REGISTRATION MODE")
+    
     while True:
-        ret, frame = video.read()
+        ret, frame = cap.read()
         if not ret:
             continue
-        
+
+        signals.update_camera_frame(frame)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector.detectMultiScale(gray, 1.3, 5)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(100, 100))
 
-        # Draw face rectangles
         for (x, y, w, h) in faces:
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 3)
-            cv2.putText(frame, f"Capturing: {count}/50", (x+5, y-10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
-            
+            faces_data.append(gray[y:y+h, x:x+w])
+            ids.append(1) 
             count += 1
-            samples.append(gray[y:y+h, x:x+w])
-            ids.append(1)  # ID 1 is the user
-        
-        # Update UI
-        window.update_camera_frame(frame)
-        window.update_status(f"CAPTURING BIOMETRIC DATA: {count}/50")
+            signals.update_progress(f"Capturing biometric data: {int((count/required_samples)*100)}%")
 
-        if count >= 50:
+        if count >= required_samples:
             break
-            
-    video.release()
-    
-    window.update_status("PROCESSING NEURAL PATTERNS...")
-    time.sleep(1)
+        
+        # Timeout/Safety break
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-    # Train the recognizer
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(samples, np.array(ids))
-    recognizer.write(FACE_FILE)
+    cap.release()
     
-    window.update_status("BIOMETRIC REGISTRATION COMPLETE")
-    time.sleep(1)
-    return True
+    if len(faces_data) > 0:
+        signals.update_status("COMPUTING NEURAL MAP...")
+        recognizer.train(faces_data, np.array(ids))
+        recognizer.save(trainer_file)
+        return True
+        
+    return False
 
-def verify_user_qt(window):
+def verify_user_qt(signals):
     """
-    Verifies the user against the trained model for PyQt6.
+    Verification with Timeout to prevent 'Stuck' state.
     """
-    if not is_user_registered():
+    if not os.path.exists(trainer_file):
         return False
 
+    signals.update_status("LOADING BIOMETRICS...")
     recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.read(FACE_FILE)
-    
-    detector = get_face_detector()
-    video = cv2.VideoCapture(0)
-    
-    verified_frames = 0
-    total_frames = 0
+    try:
+        recognizer.read(trainer_file)
+    except:
+        return False
 
-    start_time = time.time()
-    
-    # Try for 10 seconds max
-    while (time.time() - start_time) < 10:
-        ret, frame = video.read()
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    verified = False
+    start_time = time.time() # Start timer
+    timeout_seconds = 8      # Stop scanning after 8 seconds
+
+    signals.update_status("SCANNING...")
+
+    while True:
+        ret, frame = cap.read()
         if not ret:
             continue
-        
-        total_frames += 1
+
+        signals.update_camera_frame(frame)
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector.detectMultiScale(gray, 1.2, 5)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(100, 100))
 
         for (x, y, w, h) in faces:
             id_num, confidence = recognizer.predict(gray[y:y+h, x:x+w])
-
-            # Confidence: Lower is better (0 = perfect match). < 55 is usually good.
-            if confidence < 55:
-                detected_name = "✓ AUTHORIZED"
-                color = (0, 255, 0)  # Green
-                verified_frames += 1
-            else:
-                detected_name = "✗ UNKNOWN"
-                color = (0, 0, 255)  # Red
-
-            # Draw rectangle and text
-            cv2.rectangle(frame, (x, y), (x+w, y+h), color, 3)
-            cv2.putText(frame, detected_name, (x+5, y-10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
             
-            confidence_percent = max(0, 100 - confidence)
-            cv2.putText(frame, f"Match: {round(confidence_percent)}%", 
-                       (x+5, y+h+30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+            # LBPH Confidence: < 85 is a match (Lower is better)
+            if confidence < 85: 
+                verified = True
+                break 
         
-        # Update UI
-        window.update_camera_frame(frame)
-        window.update_status(f"SCANNING... MATCH CONFIDENCE: {verified_frames}/15")
-        
-        if verified_frames > 15:  # Need 15 good frames to pass
-            video.release()
-            return True
+        if verified:
+            break
 
-    video.release()
-    return False
+        # TIMEOUT CHECK: If 8 seconds pass, give up.
+        if time.time() - start_time > timeout_seconds:
+            break
+
+    cap.release()
+    return verified
