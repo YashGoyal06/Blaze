@@ -1,18 +1,14 @@
 import sys
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QGraphicsDropShadowEffect, QGraphicsOpacityEffect)
+                             QHBoxLayout, QLabel, QGraphicsDropShadowEffect)
 from PyQt6.QtCore import (Qt, QTimer, QPropertyAnimation, QEasingCurve, 
-                          QPoint, QPointF, QRect, pyqtSignal, QThread, QParallelAnimationGroup, QSequentialAnimationGroup)
-from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QLinearGradient, 
-                        QRadialGradient, QPainterPath, QFont, QPixmap, QImage, QPolygonF)
-from PyQt6.QtOpenGLWidgets import QOpenGLWidget
-from OpenGL.GL import *
-from OpenGL.GLU import *
+                          QPoint, QPointF, pyqtSignal, QThread, QSequentialAnimationGroup)
+from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QRadialGradient, 
+                        QPainterPath, QFont, QLinearGradient)
 import math
 import numpy as np
-import cv2
-import threading
 import time
+import threading
 import config
 import speech_engine as io
 import face_auth
@@ -39,150 +35,164 @@ class VoiceThread(QThread):
         self.running = False
 
 
-class OpenGLOrb(QOpenGLWidget):
-    """3D OpenGL Orb Widget"""
+class SiriOrb(QWidget):
+    """Beautiful Siri-like animated orb - Pure Qt implementation"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
         self.angle = 0
-        self.rotation_x = 0
-        self.rotation_y = 0
+        self.particles = []
+        self.state = "idle"  # idle, listening, speaking, thinking
         self.pulse = 0
         self.pulse_direction = 1
-        self.state = "idle"
+        
+        # Generate particles
+        for i in range(40):
+            angle = np.random.uniform(0, 360)
+            distance = np.random.uniform(0, 150)
+            speed = np.random.uniform(0.5, 2.0)
+            size = np.random.uniform(2, 6)
+            self.particles.append({
+                'angle': angle,
+                'distance': distance,
+                'speed': speed,
+                'size': size,
+                'base_distance': distance
+            })
         
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update_rotation)
-        self.timer.start(16)
+        self.timer.timeout.connect(self.animate)
+        self.timer.start(16)  # ~60 FPS
         
-        self.setMinimumSize(400, 400)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(500, 500)
     
-    def initializeGL(self):
-        glEnable(GL_DEPTH_TEST)
-        glEnable(GL_LIGHTING)
-        glEnable(GL_LIGHT0)
-        glEnable(GL_COLOR_MATERIAL)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-        
-        # Light setup
-        glLightfv(GL_LIGHT0, GL_POSITION, (0, 0, 2, 1))
-        glLightfv(GL_LIGHT0, GL_AMBIENT, (0.2, 0.2, 0.2, 1))
-        glLightfv(GL_LIGHT0, GL_DIFFUSE, (0.8, 0.8, 0.8, 1))
-        
-        glClearColor(0.04, 0.04, 0.06, 0.0)
+    def set_state(self, state):
+        """Change orb state: idle, listening, speaking, thinking"""
+        self.state = state
     
-    def resizeGL(self, w, h):
-        glViewport(0, 0, w, h)
-        glMatrixMode(GL_PROJECTION)
-        glLoadIdentity()
-        gluPerspective(45, w / h if h != 0 else 1, 0.1, 50.0)
-        glMatrixMode(GL_MODELVIEW)
-    
-    def paintGL(self):
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        glLoadIdentity()
-        
-        glTranslatef(0.0, 0.0, -5.0)
-        glRotatef(self.rotation_x, 1, 0, 0)
-        glRotatef(self.rotation_y, 0, 1, 0)
-        
-        # Set color based on state
-        if self.state == "listening":
-            base_color = (0.0, 1.0, 1.0, 0.8)  # Cyan
-        elif self.state == "speaking":
-            base_color = (0.0, 1.0, 0.4, 0.8)  # Green
-        elif self.state == "scanning":
-            base_color = (1.0, 0.6, 0.0, 0.8)  # Orange
-        else:
-            base_color = (0.0, 0.6, 1.0, 0.7)  # Blue
-        
-        # Draw main sphere
-        scale = 1.0 + 0.1 * self.pulse
-        glPushMatrix()
-        glScalef(scale, scale, scale)
-        glColor4f(*base_color)
-        
-        quadric = gluNewQuadric()
-        gluQuadricDrawStyle(quadric, GLU_FILL)
-        gluSphere(quadric, 1.0, 32, 32)
-        gluDeleteQuadric(quadric)
-        glPopMatrix()
-        
-        # Draw outer rings
-        for i in range(3):
-            glPushMatrix()
-            ring_scale = 1.3 + i * 0.3 + 0.05 * self.pulse
-            glScalef(ring_scale, ring_scale, ring_scale)
-            glRotatef(self.angle + i * 120, 0, 1, 0)
-            
-            alpha = 0.3 - i * 0.08
-            glColor4f(base_color[0], base_color[1], base_color[2], alpha)
-            
-            # Draw torus
-            self.draw_torus(0.05, 1.0, 20, 30)
-            glPopMatrix()
-        
-        # Draw particles for listening state
-        if self.state == "listening":
-            self.draw_particles()
-    
-    def draw_torus(self, inner_radius, outer_radius, sides, rings):
-        for i in range(rings):
-            glBegin(GL_QUAD_STRIP)
-            for j in range(sides + 1):
-                for k in range(2):
-                    s = (i + k) % rings + 0.5
-                    t = j % sides
-                    
-                    x = math.cos(t * 2 * math.pi / sides) * math.cos(s * 2 * math.pi / rings)
-                    y = math.sin(t * 2 * math.pi / sides) * math.cos(s * 2 * math.pi / rings)
-                    z = math.sin(s * 2 * math.pi / rings)
-                    
-                    glVertex3f(
-                        x * (outer_radius + inner_radius * math.cos(s * 2 * math.pi / rings)),
-                        y * (outer_radius + inner_radius * math.cos(s * 2 * math.pi / rings)),
-                        inner_radius * z
-                    )
-            glEnd()
-    
-    def draw_particles(self):
-        glDisable(GL_LIGHTING)
-        glPointSize(3.0)
-        glBegin(GL_POINTS)
-        
-        for i in range(50):
-            angle1 = (self.angle + i * 7.2) * math.pi / 180
-            angle2 = (i * 3.6) * math.pi / 180
-            distance = 2.0 + 0.5 * math.sin(self.angle * math.pi / 180 + i)
-            
-            x = distance * math.cos(angle1) * math.sin(angle2)
-            y = distance * math.sin(angle1) * math.sin(angle2)
-            z = distance * math.cos(angle2)
-            
-            alpha = 0.5 + 0.5 * math.sin(self.angle * math.pi / 180 + i)
-            glColor4f(0.0, 1.0, 1.0, alpha)
-            glVertex3f(x, y, z)
-        
-        glEnd()
-        glEnable(GL_LIGHTING)
-    
-    def update_rotation(self):
+    def animate(self):
         self.angle = (self.angle + 1) % 360
-        self.rotation_y = (self.rotation_y + 0.5) % 360
         
+        # Pulse effect
         self.pulse += self.pulse_direction * 0.02
         if self.pulse >= 1.0 or self.pulse <= 0.0:
             self.pulse_direction *= -1
         
+        # Animate particles
+        for particle in self.particles:
+            particle['angle'] = (particle['angle'] + particle['speed']) % 360
+            
+            if self.state == "listening":
+                target_distance = particle['base_distance'] * 0.7
+            elif self.state == "speaking":
+                target_distance = particle['base_distance'] * 1.3
+            elif self.state == "thinking":
+                target_distance = particle['base_distance'] * (1.0 + 0.3 * math.sin(math.radians(self.angle * 2)))
+            else:
+                target_distance = particle['base_distance']
+            
+            particle['distance'] += (target_distance - particle['distance']) * 0.1
+        
         self.update()
     
-    def set_state(self, state):
-        self.state = state
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        cx, cy = 250, 250
+        
+        # Choose colors based on state
+        if self.state == "listening":
+            primary_color = QColor(0, 180, 255)
+            secondary_color = QColor(0, 120, 200)
+        elif self.state == "speaking":
+            primary_color = QColor(100, 200, 255)
+            secondary_color = QColor(0, 150, 255)
+        elif self.state == "thinking":
+            primary_color = QColor(150, 180, 255)
+            secondary_color = QColor(100, 140, 255)
+        else:
+            primary_color = QColor(80, 160, 240)
+            secondary_color = QColor(40, 120, 200)
+        
+        # Draw outer glow rings
+        for i in range(5):
+            radius = 100 + i * 25 + self.pulse * 15
+            alpha = int(40 - i * 7)
+            
+            gradient = QRadialGradient(cx, cy, radius)
+            gradient.setColorAt(0, QColor(primary_color.red(), primary_color.green(), 
+                                         primary_color.blue(), alpha))
+            gradient.setColorAt(1, QColor(primary_color.red(), primary_color.green(), 
+                                         primary_color.blue(), 0))
+            
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+        
+        # Draw particles
+        for particle in self.particles:
+            angle_rad = math.radians(particle['angle'])
+            px = cx + particle['distance'] * math.cos(angle_rad)
+            py = cy + particle['distance'] * math.sin(angle_rad)
+            
+            alpha = int(255 * (1.0 - particle['distance'] / 200))
+            alpha = max(50, min(255, alpha))
+            
+            particle_gradient = QRadialGradient(px, py, particle['size'] * 2)
+            particle_gradient.setColorAt(0, QColor(255, 255, 255, alpha))
+            particle_gradient.setColorAt(0.5, QColor(primary_color.red(), primary_color.green(), 
+                                                    primary_color.blue(), alpha))
+            particle_gradient.setColorAt(1, QColor(primary_color.red(), primary_color.green(), 
+                                                   primary_color.blue(), 0))
+            
+            painter.setBrush(QBrush(particle_gradient))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(QPointF(px, py), particle['size'] * 2, particle['size'] * 2)
+        
+        # Draw central orb
+        orb_size = 60 + self.pulse * 20
+        
+        orb_gradient = QRadialGradient(cx, cy, orb_size)
+        orb_gradient.setColorAt(0, QColor(255, 255, 255, 200))
+        orb_gradient.setColorAt(0.3, QColor(primary_color.red(), primary_color.green(), 
+                                           primary_color.blue(), 255))
+        orb_gradient.setColorAt(0.7, QColor(secondary_color.red(), secondary_color.green(), 
+                                           secondary_color.blue(), 255))
+        orb_gradient.setColorAt(1, QColor(secondary_color.red(), secondary_color.green(), 
+                                         secondary_color.blue(), 180))
+        
+        painter.setBrush(QBrush(orb_gradient))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(cx - orb_size, cy - orb_size, orb_size * 2, orb_size * 2)
+        
+        # Draw orb highlight
+        highlight_gradient = QRadialGradient(cx - orb_size * 0.3, cy - orb_size * 0.3, orb_size * 0.8)
+        highlight_gradient.setColorAt(0, QColor(255, 255, 255, 150))
+        highlight_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+        
+        painter.setBrush(QBrush(highlight_gradient))
+        painter.drawEllipse(cx - orb_size, cy - orb_size, orb_size * 2, orb_size * 2)
+        
+        # Draw waveform if speaking
+        if self.state == "speaking":
+            painter.setPen(QPen(QColor(100, 200, 255, 150), 3))
+            
+            path = QPainterPath()
+            start_x = cx - 100
+            path.moveTo(start_x, cy)
+            
+            for x in range(200):
+                wave_x = start_x + x
+                wave_y = cy + 30 * math.sin(math.radians(x * 5 + self.angle * 3))
+                path.lineTo(wave_x, wave_y)
+            
+            painter.drawPath(path)
 
 
-class ScanningRing(QWidget):
-    """Animated scanning ring for verification"""
+class FaceVerificationWidget(QWidget):
+    """Face verification screen"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -216,514 +226,349 @@ class ScanningRing(QWidget):
         
         cx, cy = 200, 200
         
-        # Draw rotating rings
-        for i in range(4):
+        # Outer scanning rings
+        for i in range(3):
             radius = 120 + i * 30
             angle_offset = (self.angle + i * 90) % 360
-            
-            # Calculate alpha based on angle
             alpha = int(100 + 100 * abs(math.sin(math.radians(angle_offset))))
             
-            if self.scanning:
-                color = QColor(255, 150, 0, alpha)  # Orange while scanning
-            else:
-                color = QColor(0, 200, 255, alpha)  # Blue when idle
-            
-            pen = QPen(color, 3)
+            color = QColor(0, 180, 255, alpha) if self.scanning else QColor(80, 160, 240, alpha)
+            pen = QPen(color, 2)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
         
-        # Draw scan line
+        # Scanning line
         if self.scanning:
             scan_angle = (self.angle * 3) % 360
-            length = 150
+            length = 140
             x = cx + length * math.cos(math.radians(scan_angle))
             y = cy + length * math.sin(math.radians(scan_angle))
             
-            pen = QPen(QColor(255, 200, 0, 200), 4)
+            gradient = QLinearGradient(cx, cy, x, y)
+            gradient.setColorAt(0, QColor(0, 180, 255, 200))
+            gradient.setColorAt(1, QColor(0, 180, 255, 0))
+            
+            pen = QPen(QBrush(gradient), 3)
             painter.setPen(pen)
             painter.drawLine(cx, cy, int(x), int(y))
         
-        # Draw central circle
+        # Central glow
+        gradient = QRadialGradient(cx, cy, 80)
         if self.scanning:
-            gradient = QRadialGradient(cx, cy, 80)
-            gradient.setColorAt(0, QColor(255, 150, 0, 150))
-            gradient.setColorAt(1, QColor(255, 100, 0, 0))
+            gradient.setColorAt(0, QColor(0, 180, 255, 150))
+            gradient.setColorAt(1, QColor(0, 180, 255, 0))
         else:
-            gradient = QRadialGradient(cx, cy, 80)
-            gradient.setColorAt(0, QColor(0, 200, 255, 150))
-            gradient.setColorAt(1, QColor(0, 100, 200, 0))
+            gradient.setColorAt(0, QColor(80, 160, 240, 150))
+            gradient.setColorAt(1, QColor(80, 160, 240, 0))
         
         painter.setBrush(QBrush(gradient))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(cx - 80, cy - 80, 160, 160)
         
-        # Draw face icon in center
-        painter.setPen(QPen(QColor(255, 255, 255, 200), 3))
-        # Head circle
-        painter.drawEllipse(cx - 30, cy - 40, 60, 60)
-        # Body arc
+        # Face icon
+        painter.setPen(QPen(QColor(255, 255, 255, 220), 2.5))
+        painter.drawEllipse(cx - 25, cy - 35, 50, 50)
+        
         path = QPainterPath()
-        path.moveTo(cx - 40, cy + 40)
-        path.quadTo(cx, cy + 60, cx + 40, cy + 40)
+        path.moveTo(cx - 35, cy + 35)
+        path.quadTo(cx, cy + 50, cx + 35, cy + 35)
         painter.drawPath(path)
-
-
-class HexagonPanel(QWidget):
-    """Animated hexagon tech panel"""
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.angle = 0
-        self.hexagons = []
-        
-        # Generate random hexagon positions
-        for i in range(12):
-            x = np.random.randint(30, 170)
-            y = np.random.randint(50, 350)
-            size = np.random.randint(15, 40)
-            speed = np.random.uniform(0.5, 2.0)
-            self.hexagons.append([x, y, size, speed, 0])
-        
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.animate)
-        self.timer.start(30)
-        
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-    
-    def animate(self):
-        for hex_data in self.hexagons:
-            hex_data[4] = (hex_data[4] + hex_data[3]) % 360
-        self.update()
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        for x, y, size, speed, angle in self.hexagons:
-            path = QPainterPath()
-            
-            # Create hexagon using QPointF
-            points = []
-            for i in range(6):
-                angle_rad = math.radians(60 * i + angle)
-                px = x + size * math.cos(angle_rad)
-                py = y + size * math.sin(angle_rad)
-                points.append(QPointF(px, py))
-            
-            polygon = QPolygonF(points)
-            path.addPolygon(polygon)
-            
-            # Draw with glow
-            alpha = int(30 + 20 * math.sin(math.radians(angle)))
-            painter.setPen(QPen(QColor(0, 255, 255, alpha), 2))
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
 
 
 class BlazeMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        self.setWindowTitle("BLAZE AI PROTOCOL")
-        # Adjusted for MacBook Retina display
-        self.setFixedSize(1344, 756)
-        
-        # Frameless window
+        self.setWindowTitle("Blaze Voice Assistant")
+        self.setFixedSize(1000, 700)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
         
-        # Main widget
+        # Dark background
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet("""
             QWidget {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #0a0a14, stop:0.5 #0f0a1f, stop:1 #0a0f1f);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 #000000, stop:1 #0a0a0a);
             }
         """)
         self.setCentralWidget(self.central_widget)
         
-        # Main layout
         self.main_layout = QVBoxLayout(self.central_widget)
-        self.main_layout.setContentsMargins(30, 20, 30, 20)
-        self.main_layout.setSpacing(15)
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.main_layout.setSpacing(0)
         
-        # Top bar
-        self.setup_top_bar()
+        # Setup UI
+        self.setup_header()
         
-        # Content area (will switch between verification and assistant)
         self.content_widget = QWidget()
         self.content_layout = QVBoxLayout(self.content_widget)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setContentsMargins(20, 20, 20, 20)
         self.main_layout.addWidget(self.content_widget)
         
-        # Create both screens but show verification first
+        # Start with verification
         self.setup_verification_screen()
         
-        # Threads
         self.voice_thread = None
         
-        # Start boot sequence
-        QTimer.singleShot(2000, self.start_authentication)
+        # Start authentication after delay
+        QTimer.singleShot(1500, self.start_authentication)
     
-    def setup_top_bar(self):
-        """Create cyberpunk-style top bar"""
-        top_bar = QWidget()
-        top_bar.setFixedHeight(60)
-        top_bar_layout = QHBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(15, 8, 15, 8)
+    def setup_header(self):
+        """Modern header"""
+        header = QWidget()
+        header.setFixedHeight(70)
+        header.setStyleSheet("background: rgba(15, 15, 25, 200);")
         
-        # Title with glow effect
-        title = QLabel("⚡ B L A Z E  ◢ A I ◣  P R O T O C O L")
-        title.setFont(QFont("Helvetica", 24, QFont.Weight.Bold))
-        title.setStyleSheet("""
-            QLabel {
-                color: #00ffff;
-                background: transparent;
-                letter-spacing: 2px;
-            }
-        """)
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(30, 0, 30, 0)
         
-        # Add glow effect
+        # Logo/Title
+        title = QLabel("● Blaze")
+        title.setFont(QFont("Helvetica", 28, QFont.Weight.Light))
+        title.setStyleSheet("color: #5AB4FF; background: transparent;")
+        
         glow = QGraphicsDropShadowEffect()
-        glow.setBlurRadius(30)
-        glow.setColor(QColor(0, 255, 255, 200))
+        glow.setBlurRadius(25)
+        glow.setColor(QColor(90, 180, 255, 180))
         glow.setOffset(0, 0)
         title.setGraphicsEffect(glow)
         
-        top_bar_layout.addWidget(title)
-        top_bar_layout.addStretch()
+        layout.addWidget(title)
+        layout.addStretch()
         
-        # System stats
-        stats_widget = QWidget()
-        stats_layout = QVBoxLayout(stats_widget)
-        stats_layout.setSpacing(5)
-        stats_layout.setContentsMargins(0, 0, 0, 0)
+        # Status indicator
+        self.status_dot = QLabel("●")
+        self.status_dot.setFont(QFont("Helvetica", 24))
+        self.status_dot.setStyleSheet("color: #4CAF50; background: transparent;")
+        layout.addWidget(self.status_dot)
         
-        cpu_label = QLabel("◢ CPU: ONLINE")
-        cpu_label.setFont(QFont("Monaco", 10))
-        cpu_label.setStyleSheet("color: #00ff88;")
-        stats_layout.addWidget(cpu_label)
-        
-        neural_label = QLabel("◢ NEURAL: ACTIVE")
-        neural_label.setFont(QFont("Monaco", 10))
-        neural_label.setStyleSheet("color: #00ff88;")
-        stats_layout.addWidget(neural_label)
-        
-        top_bar_layout.addWidget(stats_widget)
+        status_text = QLabel("ONLINE")
+        status_text.setFont(QFont("Monaco", 11))
+        status_text.setStyleSheet("color: #888; background: transparent; margin-left: 5px;")
+        layout.addWidget(status_text)
         
         # Close button
-        close_btn = QLabel("◢ TERMINATE")
-        close_btn.setFixedSize(120, 40)
+        close_btn = QLabel("×")
+        close_btn.setFixedSize(40, 40)
         close_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        close_btn.setFont(QFont("Helvetica", 11, QFont.Weight.Bold))
+        close_btn.setFont(QFont("Helvetica", 32, QFont.Weight.Light))
         close_btn.setStyleSheet("""
             QLabel {
-                color: #ff0066;
-                background: rgba(255, 0, 100, 50);
-                border-radius: 10px;
-                border: 2px solid #ff0066;
+                color: #888;
+                background: transparent;
+                border-radius: 20px;
             }
             QLabel:hover {
-                background: rgba(255, 0, 100, 100);
+                color: #fff;
+                background: rgba(255, 255, 255, 10);
             }
         """)
         close_btn.mousePressEvent = lambda e: self.close()
-        top_bar_layout.addWidget(close_btn)
+        layout.addWidget(close_btn)
         
-        self.main_layout.addWidget(top_bar)
+        self.main_layout.addWidget(header)
     
     def setup_verification_screen(self):
-        """Biometric verification screen"""
-        # Clear content
+        """Face verification UI"""
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Center container
-        center_container = QWidget()
-        center_layout = QVBoxLayout(center_container)
-        center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        center_layout.setSpacing(30)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(40)
         
-        # Scanning ring animation
-        self.scan_ring = ScanningRing()
-        center_layout.addWidget(self.scan_ring, alignment=Qt.AlignmentFlag.AlignCenter)
+        # Verification widget
+        self.face_widget = FaceVerificationWidget()
+        layout.addWidget(self.face_widget, alignment=Qt.AlignmentFlag.AlignCenter)
         
         # Status label
-        self.status_label = QLabel("◢ INITIALIZING BIOMETRIC SCAN ◣")
+        self.status_label = QLabel("Initializing Face Recognition")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_label.setFont(QFont("Helvetica", 18, QFont.Weight.Bold))
+        self.status_label.setFont(QFont("Helvetica", 20, QFont.Weight.Light))
         self.status_label.setStyleSheet("""
             QLabel {
-                color: #00ffff;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(0, 100, 150, 80), 
-                    stop:0.5 rgba(0, 150, 200, 100),
-                    stop:1 rgba(0, 100, 150, 80));
-                border: 2px solid #00ffff;
-                border-radius: 12px;
-                padding: 20px;
-                min-width: 600px;
-            }
-        """)
-        center_layout.addWidget(self.status_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Progress label
-        self.progress_label = QLabel("◢ STANDBY ◣")
-        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.progress_label.setFont(QFont("Monaco", 14))
-        self.progress_label.setStyleSheet("""
-            QLabel {
-                color: #00ff88;
-                background: rgba(0, 50, 100, 100);
-                border: 2px solid #00aa66;
-                border-radius: 10px;
+                color: #5AB4FF;
+                background: transparent;
                 padding: 15px;
-                min-width: 400px;
             }
         """)
-        center_layout.addWidget(self.progress_label, alignment=Qt.AlignmentFlag.AlignCenter)
         
-        self.content_layout.addWidget(center_container)
+        glow = QGraphicsDropShadowEffect()
+        glow.setBlurRadius(20)
+        glow.setColor(QColor(90, 180, 255, 150))
+        glow.setOffset(0, 0)
+        self.status_label.setGraphicsEffect(glow)
         
-        # Pulsing animation
-        self.setup_pulse_animation()
+        layout.addWidget(self.status_label)
+        
+        # Progress text
+        self.progress_label = QLabel("Please look at the camera")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_label.setFont(QFont("Helvetica", 14))
+        self.progress_label.setStyleSheet("color: #666; background: transparent;")
+        layout.addWidget(self.progress_label)
+        
+        self.content_layout.addWidget(container)
     
     def setup_assistant_screen(self):
-        """Voice assistant screen"""
-        # Clear content
+        """Voice assistant UI"""
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
         
-        # Center area with 3D orb
-        center_container = QWidget()
-        center_layout = QHBoxLayout(center_container)
-        center_layout.setContentsMargins(0, 0, 0, 0)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(30)
         
-        # Left hexagon panel
-        self.hex_panel = HexagonPanel()
-        self.hex_panel.setFixedSize(200, 400)
-        center_layout.addWidget(self.hex_panel)
+        # Siri orb
+        self.orb = SiriOrb()
+        layout.addWidget(self.orb, alignment=Qt.AlignmentFlag.AlignCenter)
         
-        # Center 3D Orb
-        self.orb = OpenGLOrb()
-        self.orb.setFixedSize(500, 500)
-        center_layout.addWidget(self.orb, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Right info panel
-        self.setup_info_panel(center_layout)
-        
-        self.content_layout.addWidget(center_container, alignment=Qt.AlignmentFlag.AlignCenter)
-        
-        # Status bar
-        self.assistant_status = QLabel("◢ VOICE INTERFACE ACTIVE ◣")
-        self.assistant_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.assistant_status.setFont(QFont("Helvetica", 16, QFont.Weight.Bold))
-        self.assistant_status.setStyleSheet("""
-            QLabel {
-                color: #00ffff;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 rgba(0, 100, 150, 80), 
-                    stop:0.5 rgba(0, 150, 200, 100),
-                    stop:1 rgba(0, 100, 150, 80));
-                border: 2px solid #00ffff;
-                border-radius: 12px;
-                padding: 15px;
-            }
-        """)
-        self.content_layout.addWidget(self.assistant_status)
-        
-        # Command display
-        self.command_label = QLabel("◢ SAY 'BLAZE' TO ACTIVATE ◣")
+        # Command label
+        self.command_label = QLabel('Say "Blaze" to activate')
         self.command_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.command_label.setFont(QFont("Monaco", 13))
-        self.command_label.setStyleSheet("""
-            QLabel {
-                color: #00ff88;
-                background: rgba(0, 50, 100, 100);
-                border: 2px solid #00aa66;
-                border-radius: 10px;
-                padding: 15px;
-            }
-        """)
-        self.content_layout.addWidget(self.command_label)
-    
-    def setup_info_panel(self, layout):
-        """Right side info panel"""
-        info_panel = QWidget()
-        info_panel.setFixedSize(200, 400)
-        info_layout = QVBoxLayout(info_panel)
-        info_layout.setSpacing(15)
+        self.command_label.setFont(QFont("Helvetica", 18, QFont.Weight.Light))
+        self.command_label.setStyleSheet("color: #5AB4FF; background: transparent;")
         
-        # System info boxes
-        for title, value in [
-            ("◢ BIOMETRIC", "VERIFIED"),
-            ("◢ VOICE SYS", "ACTIVE"),
-            ("◢ NEURAL NET", "ONLINE"),
-            ("◢ SECURITY", "MAX")
-        ]:
-            box = QLabel(f"{title}\n{value}")
-            box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            box.setFont(QFont("Monaco", 11))
-            box.setStyleSheet("""
-                QLabel {
-                    color: #00aaff;
-                    background: rgba(0, 50, 100, 80);
-                    border: 2px solid #0088cc;
-                    border-radius: 8px;
-                    padding: 12px;
-                }
-            """)
-            info_layout.addWidget(box)
+        glow = QGraphicsDropShadowEffect()
+        glow.setBlurRadius(20)
+        glow.setColor(QColor(90, 180, 255, 120))
+        glow.setOffset(0, 0)
+        self.command_label.setGraphicsEffect(glow)
         
-        info_layout.addStretch()
-        layout.addWidget(info_panel)
-    
-    def setup_pulse_animation(self):
-        """Create pulsing effect for status label"""
-        self.pulse_timer = QTimer()
-        self.pulse_value = 0
-        self.pulse_direction = 1
+        layout.addWidget(self.command_label)
         
-        def pulse():
-            self.pulse_value += self.pulse_direction * 5
-            if self.pulse_value >= 100 or self.pulse_value <= 0:
-                self.pulse_direction *= -1
-            
-            alpha = 80 + int(20 * (self.pulse_value / 100))
-            
-            if hasattr(self, 'status_label') and self.status_label:
-                self.status_label.setStyleSheet(f"""
-                    QLabel {{
-                        color: #00ffff;
-                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                            stop:0 rgba(0, 100, 150, {alpha}), 
-                            stop:0.5 rgba(0, 150, 200, {alpha + 20}),
-                            stop:1 rgba(0, 100, 150, {alpha}));
-                        border: 2px solid #00ffff;
-                        border-radius: 12px;
-                        padding: 20px;
-                        min-width: 600px;
-                    }}
-                """)
+        # Subtitle
+        subtitle = QLabel("Listening for your command...")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setFont(QFont("Helvetica", 13))
+        subtitle.setStyleSheet("color: #555; background: transparent;")
+        layout.addWidget(subtitle)
         
-        self.pulse_timer.timeout.connect(pulse)
-        self.pulse_timer.start(30)
+        self.content_layout.addWidget(container)
     
     def update_status(self, text):
-        if hasattr(self, 'status_label') and self.status_label:
-            self.status_label.setText(f"◢ {text} ◣")
+        if hasattr(self, 'status_label'):
+            self.status_label.setText(text)
     
     def update_progress(self, text):
-        if hasattr(self, 'progress_label') and self.progress_label:
-            self.progress_label.setText(f"◢ {text} ◣")
+        if hasattr(self, 'progress_label'):
+            self.progress_label.setText(text)
     
     def update_command(self, text):
-        if hasattr(self, 'command_label') and self.command_label:
-            self.command_label.setText(f"◢ {text} ◣")
+        if hasattr(self, 'command_label'):
+            self.command_label.setText(text)
+    
+    def update_camera_frame(self, frame):
+        """Dummy method for face_auth compatibility"""
+        pass
     
     def start_authentication(self):
-        """Start face authentication"""
-        self.update_status("BIOMETRIC SCAN INITIATED")
-        self.scan_ring.start_scan()
-        
-        # Run in thread
+        """Start face auth"""
+        self.update_status("Scanning Face")
+        self.face_widget.start_scan()
         threading.Thread(target=self.run_face_auth, daemon=True).start()
     
     def run_face_auth(self):
-        """Face authentication logic - camera runs in background"""
+        """Face authentication logic"""
         time.sleep(1)
         
-        if not face_auth.is_user_registered():
-            self.update_status("NO USER FOUND - REGISTRATION MODE")
-            self.update_progress("CAPTURING BIOMETRIC DATA...")
-            io.speak("Identity not found. Initializing registration protocol.")
-            success = face_auth.capture_and_train_silent(self)
-            if not success:
-                self.update_status("REGISTRATION FAILED")
-                self.scan_ring.stop_scan()
-                return
-        
-        self.update_status("SCANNING BIOMETRIC SIGNATURE")
-        self.update_progress("ANALYZING FACIAL FEATURES...")
-        io.speak("Analyzing biometric data")
-        verified = face_auth.verify_user_silent(self)
-        
-        self.scan_ring.stop_scan()
-        
-        if verified:
-            self.update_status("ACCESS GRANTED")
-            self.update_progress("NEURAL LINK ESTABLISHED")
-            time.sleep(1)
+        try:
+            if not face_auth.is_user_registered():
+                self.update_status("No User Found - Registration Mode")
+                self.update_progress("Capturing biometric data...")
+                io.speak("Identity not found. Starting registration.")
+                success = face_auth.capture_and_train_qt(self)
+                if not success:
+                    self.update_status("Registration Failed")
+                    self.face_widget.stop_scan()
+                    return
             
-            # Switch to assistant screen
-            QTimer.singleShot(0, self.setup_assistant_screen)
+            self.update_status("Verifying Identity")
+            self.update_progress("Analyzing facial features...")
+            io.speak("Scanning biometric data")
+            verified = face_auth.verify_user_qt(self)
             
-            io.speak(f"Welcome back, {config.USER_NAME}. All systems operational.")
-            time.sleep(2)
-            self.start_voice_listening()
-        else:
-            self.update_status("ACCESS DENIED - INTRUDER DETECTED")
-            self.update_progress("SYSTEM LOCKDOWN")
-            io.speak("Unknown entity. System lockdown initiated.")
+            self.face_widget.stop_scan()
+            
+            if verified:
+                self.update_status("Access Granted")
+                self.update_progress("Welcome back")
+                time.sleep(1)
+                
+                QTimer.singleShot(0, self.setup_assistant_screen)
+                
+                io.speak(f"Welcome back, {config.USER_NAME}.")
+                time.sleep(1)
+                self.start_voice_listening()
+            else:
+                self.update_status("Access Denied")
+                self.update_progress("Unknown person detected")
+                io.speak("Access denied.")
+        except Exception as e:
+            print(f"Error in face auth: {e}")
+            self.update_status("Error in face recognition")
+            self.face_widget.stop_scan()
     
     def start_voice_listening(self):
-        """Start voice command loop"""
+        """Start listening"""
+        self.orb.set_state("listening")
         self.voice_thread = VoiceThread()
         self.voice_thread.command_received.connect(self.process_command)
         self.voice_thread.start()
     
     def process_command(self, command):
         """Process voice commands"""
-        self.update_command(f"PROCESSING: {command.upper()}")
+        self.update_command(f"Processing: {command}")
         
         if "blaze" in command:
             self.orb.set_state("speaking")
             
             if "shutdown" in command or "shut down" in command:
-                self.update_command("INITIATING SYSTEM SHUTDOWN")
-                io.speak("Shutting down all systems. Goodbye.")
+                self.update_command("Shutting down system")
+                io.speak("Shutting down. Goodbye.")
                 QTimer.singleShot(2000, lambda: automation.shutdown_system())
                 QTimer.singleShot(2500, self.close)
             
             elif "restart" in command or "reboot" in command:
-                self.update_command("SYSTEM RESTART INITIATED")
-                io.speak("Restarting all systems.")
+                self.update_command("Restarting system")
+                io.speak("Restarting system.")
                 automation.restart_system()
                 QTimer.singleShot(1000, self.close)
             
             elif "sleep" in command:
-                io.speak("Entering sleep mode.")
+                io.speak("Going to sleep.")
                 automation.sleep_system()
                 QTimer.singleShot(1000, self.close)
             
             elif "open" in command:
                 app = command.replace("open", "").replace("blaze", "").strip()
-                self.update_status(f"◢ LAUNCHING: {app.upper()} ◣")
+                self.update_command(f"Opening {app}")
                 automation.open_app(app)
             
             elif "search" in command:
                 query = command.replace("search", "").replace("blaze", "").strip()
-                self.update_status(f"◢ SEARCHING: {query.upper()} ◣")
+                self.update_command(f"Searching: {query}")
                 automation.search_google(query)
             
             elif "screenshot" in command:
-                self.update_status("◢ CAPTURING SCREEN ◣")
+                self.update_command("Taking screenshot")
                 automation.take_screenshot()
             
             elif "stop" in command or "exit" in command:
-                io.speak("Terminating neural link. Goodbye.")
+                io.speak("Goodbye.")
                 self.close()
             
             QTimer.singleShot(2000, lambda: self.orb.set_state("listening"))
-            QTimer.singleShot(2000, lambda: self.update_status("◢ VOICE INTERFACE ACTIVE ◣"))
+            QTimer.singleShot(2000, lambda: self.update_command('Say "Blaze" to activate'))
     
     def closeEvent(self, event):
-        """Clean up on close"""
         if self.voice_thread:
             self.voice_thread.stop()
             self.voice_thread.wait()
