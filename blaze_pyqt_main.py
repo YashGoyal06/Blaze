@@ -4,17 +4,28 @@ import random
 import cv2
 import numpy as np
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QGraphicsDropShadowEffect)
+                             QHBoxLayout, QLabel, QGraphicsDropShadowEffect, 
+                             QProgressBar, QFrame, QScrollArea)
 from PyQt6.QtCore import (Qt, QTimer, QPropertyAnimation, QEasingCurve, 
-                          QPoint, QPointF, pyqtSignal, QThread, QObject, QRectF)
+                          QPoint, QPointF, pyqtSignal, QThread, QObject, QRectF, QTime, QDate)
 from PyQt6.QtGui import (QPainter, QColor, QPen, QBrush, QRadialGradient, 
                         QPainterPath, QFont, QLinearGradient, QImage)
 import math
 import time
+import datetime
+import subprocess
+
+# Local imports
 import config
 import speech_engine as io
 import face_auth
 import automation
+
+# Optional dependency for system stats
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 # --- 1. SIGNAL BRIDGE ---
 class FaceAuthSignals(QObject):
@@ -72,9 +83,7 @@ class FaceAuthThread(QThread):
             self.signals.update_progress("Scanning...") 
             io.speak("Scanning biometric data")
             
-            # This now has a timeout so it won't freeze
             verified = face_auth.verify_user_qt(self.signals)
-            
             self.signals.auth_result.emit(verified)
 
         except Exception as e:
@@ -102,7 +111,85 @@ class VoiceThread(QThread):
         self.running = False
 
 
-# --- 2. BOOT ANIMATION ---
+# --- 2. NEW WIDGETS ---
+
+class HUDClock(QWidget):
+    """Displays Date and Time in a futuristic format"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(200, 80)
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update)
+        self.timer.start(1000)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Time
+        current_time = QTime.currentTime().toString("HH:mm")
+        painter.setPen(QPen(QColor(90, 180, 255), 1))
+        painter.setFont(QFont("Helvetica", 32, QFont.Weight.Bold))
+        painter.drawText(0, 40, current_time)
+        
+        # Date
+        current_date = QDate.currentDate().toString("ddd, MMM d")
+        painter.setPen(QPen(QColor(200, 200, 200), 1))
+        painter.setFont(QFont("Helvetica", 12))
+        painter.drawText(2, 60, current_date.upper())
+
+class SystemMonitor(QWidget):
+    """Circular Progress Bars for CPU and RAM"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(200, 100)
+        self.cpu_usage = 0
+        self.ram_usage = 0
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_stats)
+        self.timer.start(2000)
+
+    def update_stats(self):
+        if psutil:
+            self.cpu_usage = psutil.cpu_percent()
+            self.ram_usage = psutil.virtual_memory().percent
+        else:
+            self.cpu_usage = random.randint(10, 30) # Mock data if library missing
+            self.ram_usage = random.randint(40, 60)
+        self.update()
+
+    def draw_circle_bar(self, painter, x, y, value, label):
+        radius = 30
+        
+        # Background track
+        painter.setPen(QPen(QColor(50, 50, 70), 4))
+        painter.drawEllipse(x, y, radius*2, radius*2)
+        
+        # Value arc
+        color = QColor(0, 255, 150) if value < 80 else QColor(255, 50, 50)
+        painter.setPen(QPen(color, 4))
+        span_angle = int(-value * 3.6 * 16)
+        painter.drawArc(x, y, radius*2, radius*2, 90 * 16, span_angle)
+        
+        # Text
+        painter.setPen(QPen(QColor(255, 255, 255), 1))
+        painter.setFont(QFont("Helvetica", 9))
+        text_rect = QRectF(x, y + radius - 10, radius*2, 20)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, f"{int(value)}%")
+        
+        painter.setPen(QPen(QColor(150, 150, 150), 1))
+        painter.setFont(QFont("Helvetica", 8))
+        label_rect = QRectF(x, y + radius * 2 + 5, radius*2, 20)
+        painter.drawText(label_rect, Qt.AlignmentFlag.AlignCenter, label)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.draw_circle_bar(painter, 10, 10, self.cpu_usage, "CPU")
+        self.draw_circle_bar(painter, 100, 10, self.ram_usage, "RAM")
+
+
+# --- 3. ANIMATIONS ---
 class BootSequenceWidget(QWidget):
     finished = pyqtSignal()
 
@@ -447,31 +534,56 @@ class BlazeMainWindow(QMainWindow):
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             if item.widget(): item.widget().deleteLater()
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(30)
+        
+        # --- HUD LAYOUT ---
+        main_hud = QVBoxLayout()
+        
+        # Top Bar: Clock & Stats
+        top_bar = QHBoxLayout()
+        self.clock = HUDClock()
+        self.sys_monitor = SystemMonitor()
+        top_bar.addWidget(self.clock)
+        top_bar.addStretch()
+        top_bar.addWidget(self.sys_monitor)
+        main_hud.addLayout(top_bar)
+        
+        # Center: Orb
         self.orb = SiriOrb()
-        layout.addWidget(self.orb, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.command_label = QLabel('Say "Blaze" to activate')
-        self.command_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.command_label.setFont(QFont("Helvetica", 18, QFont.Weight.Light))
-        self.command_label.setStyleSheet("color: #5AB4FF;")
-        layout.addWidget(self.command_label)
+        main_hud.addWidget(self.orb, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Bottom: Command Log
+        self.command_log = QLabel('Say "Blaze" to activate')
+        self.command_log.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.command_log.setFont(QFont("Helvetica", 16, QFont.Weight.Light))
+        self.command_log.setStyleSheet("color: #5AB4FF; padding: 10px;")
+        self.command_log.setWordWrap(True)
+        main_hud.addWidget(self.command_log)
+        
         subtitle = QLabel("System Online • Listening")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setFont(QFont("Helvetica", 13))
+        subtitle.setFont(QFont("Helvetica", 12))
         subtitle.setStyleSheet("color: #555;")
-        layout.addWidget(subtitle)
+        main_hud.addWidget(subtitle)
+
+        container = QWidget()
+        container.setLayout(main_hud)
         self.content_layout.addWidget(container)
     
     def update_status(self, text):
         if hasattr(self, 'status_label'): self.status_label.setText(text)
     def update_progress(self, text):
         if hasattr(self, 'progress_label'): self.progress_label.setText(text)
-    def update_command(self, text):
-        if hasattr(self, 'command_label'): self.command_label.setText(text)
     
+    def add_log(self, text):
+        """Adds text to the command log with fading history effect"""
+        current_text = self.command_log.text()
+        # Keep last 3 lines essentially
+        lines = current_text.split('\n')
+        if len(lines) > 2:
+            lines = lines[-2:]
+        new_text = "\n".join(lines) + "\n> " + text
+        self.command_log.setText(new_text.strip())
+
     def start_voice_listening(self):
         self.orb.set_state("listening")
         self.voice_thread = VoiceThread()
@@ -479,44 +591,103 @@ class BlazeMainWindow(QMainWindow):
         self.voice_thread.start()
     
     def process_command(self, command):
-        self.update_command(f"Processing: {command}")
+        self.add_log(f"Processing: {command}")
+        
         if "blaze" in command:
             self.orb.set_state("speaking")
-            if "shutdown" in command or "shut down" in command:
-                self.update_command("Shutting down system")
+            
+            # --- SYSTEM COMMANDS ---
+            if "shutdown" in command:
+                self.add_log("Shutting down...")
                 io.speak("Shutting down. Goodbye.")
                 QTimer.singleShot(2000, lambda: automation.shutdown_system())
                 QTimer.singleShot(2500, self.close)
+            
             elif "restart" in command or "reboot" in command:
-                self.update_command("Restarting system")
+                self.add_log("Restarting...")
                 io.speak("Restarting system.")
                 automation.restart_system()
                 QTimer.singleShot(1000, self.close)
+            
             elif "sleep" in command:
                 io.speak("Going to sleep.")
                 automation.sleep_system()
                 QTimer.singleShot(1000, self.close)
-            elif "open" in command:
-                app = command.replace("open", "").replace("blaze", "").strip()
-                self.update_command(f"Opening {app}")
-                automation.open_app(app)
-            elif "search" in command:
-                query = command.replace("search", "").replace("blaze", "").strip()
-                self.update_command(f"Searching: {query}")
-                automation.search_google(query)
-            elif "screenshot" in command:
-                self.update_command("Taking screenshot")
-                automation.take_screenshot()
+            
             elif "stop" in command or "exit" in command:
                 io.speak("Goodbye.")
                 self.close()
+
+            # --- UTILITY COMMANDS ---
+            elif "open" in command:
+                app = command.replace("open", "").replace("blaze", "").strip()
+                self.add_log(f"Opening {app}")
+                automation.open_app(app)
+            
+            elif "search" in command:
+                query = command.replace("search", "").replace("blaze", "").strip()
+                self.add_log(f"Searching: {query}")
+                automation.search_google(query)
+            
+            elif "screenshot" in command:
+                self.add_log("Taking screenshot")
+                automation.take_screenshot()
+
+            # --- NEW FEATURES ---
+            elif "time" in command:
+                now = datetime.datetime.now().strftime("%I:%M %p")
+                self.add_log(f"Time: {now}")
+                io.speak(f"The time is {now}")
+
+            elif "date" in command:
+                today = datetime.datetime.now().strftime("%A, %B %d")
+                self.add_log(f"Date: {today}")
+                io.speak(f"Today is {today}")
+
+            elif "volume" in command:
+                # Basic Volume Control (Mac)
+                try:
+                    words = command.split()
+                    for word in words:
+                        if word.isdigit():
+                            vol = int(word)
+                            os.system(f"osascript -e 'set volume output volume {vol}'")
+                            self.add_log(f"Volume set to {vol}%")
+                            io.speak(f"Volume set to {vol} percent.")
+                            break
+                except:
+                    pass
+            
+            elif "mute" in command:
+                os.system("osascript -e 'set volume output muted true'")
+                self.add_log("System Muted")
+            
+            elif "unmute" in command:
+                os.system("osascript -e 'set volume output muted false'")
+                self.add_log("System Unmuted")
+
+            elif "note" in command or "write" in command:
+                io.speak("What should I write?")
+                # Quick listen for the note content
+                # Note: blocking call here is okay for short interactions
+                note_content = io.listen() 
+                if note_content != "none":
+                    with open("notes.txt", "a") as f:
+                        f.write(f"{datetime.datetime.now()}: {note_content}\n")
+                    self.add_log("Note saved.")
+                    io.speak("I've saved that note for you.")
+                else:
+                    io.speak("I didn't catch that.")
+
             QTimer.singleShot(2000, lambda: self.orb.set_state("listening"))
-            QTimer.singleShot(2000, lambda: self.update_command('Say "Blaze" to activate'))
-    
+            
     def closeEvent(self, event):
         if hasattr(self, 'orb') and self.orb: self.orb.timer.stop()
         if hasattr(self, 'face_widget') and self.face_widget: self.face_widget.timer.stop()
         if hasattr(self, 'boot_widget') and self.boot_widget: self.boot_widget.timer.stop()
+        if hasattr(self, 'sys_monitor') and self.sys_monitor: self.sys_monitor.timer.stop()
+        if hasattr(self, 'clock') and self.clock: self.clock.timer.stop()
+        
         if self.voice_thread and self.voice_thread.isRunning():
             self.voice_thread.stop()
             self.voice_thread.wait(500)
